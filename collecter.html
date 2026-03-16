@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>제스처 데이터 수집기</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+<style>
+  :root {
+    --bg: #0f0c29;
+    --card: rgba(255,255,255,0.07);
+    --glass: rgba(255,255,255,0.12);
+    --yellow: #ffd93d;
+    --teal: #4ecdc4;
+    --green: #6bcb77;
+    --red: #ff6b6b;
+    --orange: #ff9f43;
+    --purple: #c77dff;
+    --font: 'Noto Sans KR', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--font); }
+  body {
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #1a1a3e 100%);
+    min-height: 100vh;
+    color: #fff;
+    padding: 20px;
+  }
+
+  h1 {
+    font-size: 1.8rem; font-weight: 900;
+    background: linear-gradient(135deg, var(--yellow), var(--teal));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 4px;
+  }
+  .subtitle { font-size: 0.9rem; color: rgba(255,255,255,0.5); margin-bottom: 20px; }
+
+  .layout { display: flex; gap: 20px; max-width: 1100px; margin: 0 auto; align-items: flex-start; }
+
+  /* 카메라 영역 */
+  .cam-section { flex: 1; min-width: 0; }
+  .cam-wrap {
+    position: relative; border-radius: 16px; overflow: hidden;
+    background: #000; aspect-ratio: 4/3;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.1); margin-bottom: 12px;
+  }
+  #videoEl { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  #poseCanvas { position: absolute; inset: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+
+  /* 오버레이 공통 */
+  .overlay-base {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    border-radius: 16px; gap: 8px;
+  }
+  .overlay-base.active { display: flex; }
+
+  /* 카운트다운 */
+  .countdown-overlay { background: rgba(15,12,41,0.75); }
+  .countdown-num { font-size: 7rem; font-weight: 900; color: var(--yellow); text-shadow: 0 0 40px rgba(255,217,61,0.6); line-height: 1; }
+  .countdown-sub { font-size: 1rem; font-weight: 700; color: rgba(255,255,255,0.6); text-align: center; padding: 0 20px; }
+
+  /* 녹화 중 */
+  .record-overlay { background: rgba(255,107,107,0.12); border: 3px solid var(--red); }
+  .record-frame-num { font-size: 5rem; font-weight: 900; color: #fff; text-shadow: 0 0 30px rgba(255,255,255,0.5); line-height: 1; }
+  .record-sub { font-size: 1rem; font-weight: 700; color: rgba(255,255,255,0.7); }
+
+  /* 쉬는 시간 */
+  .rest-overlay { background: rgba(255,159,67,0.12); border: 3px solid var(--orange); }
+  .rest-num { font-size: 5rem; font-weight: 900; color: var(--orange); text-shadow: 0 0 30px rgba(255,159,67,0.5); line-height: 1; }
+  .rest-sub { font-size: 1rem; font-weight: 700; color: rgba(255,255,255,0.7); }
+
+  /* 진행바 */
+  .progress-wrap { margin-bottom: 12px; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 0.8rem; color: rgba(255,255,255,0.6); margin-bottom: 6px; }
+  .progress-bg { background: rgba(255,255,255,0.1); border-radius: 6px; height: 8px; overflow: hidden; }
+  .progress-fill { height: 100%; border-radius: 6px; background: var(--teal); transition: width 0.4s ease; box-shadow: 0 0 8px var(--teal); }
+
+  /* 버튼 */
+  .btn {
+    cursor: pointer; border: none; border-radius: 10px;
+    font-size: 1rem; font-weight: 700; padding: 12px 20px;
+    transition: all 0.15s; box-shadow: 0 4px 0 rgba(0,0,0,0.3);
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 0 rgba(0,0,0,0.3); }
+  .btn:active { transform: translateY(2px); box-shadow: 0 2px 0 rgba(0,0,0,0.3); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+  .btn-record { background: var(--red);    color: #fff; flex: 1; }
+  .btn-auto   { background: var(--orange); color: #fff; flex: 1; }
+  .btn-stop   { background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.3); flex: 1; }
+  .btn-save   { background: var(--green);  color: #111; }
+  .btn-clear  { background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2); }
+  .btn-row    { display: flex; gap: 8px; margin-bottom: 8px; }
+
+  /* 연속촬영 설정 */
+  .auto-settings {
+    display: flex; align-items: center; gap: 10px;
+    background: rgba(255,159,67,0.08); border: 1px solid rgba(255,159,67,0.2);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
+    font-size: 0.85rem; color: rgba(255,255,255,0.65); flex-wrap: wrap;
+  }
+  .auto-settings input[type=number] {
+    width: 56px; background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2); border-radius: 6px;
+    color: #fff; font-size: 0.9rem; font-weight: 700; padding: 4px 8px; text-align: center;
+  }
+
+  /* 오른쪽 패널 */
+  .panel { width: 320px; flex-shrink: 0; display: flex; flex-direction: column; gap: 12px; }
+
+  .card {
+    background: var(--card); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px; padding: 16px; backdrop-filter: blur(10px);
+  }
+  .card-title {
+    font-size: 0.7rem; font-weight: 700; color: rgba(255,255,255,0.4);
+    text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 12px;
+  }
+
+  /* 제스처 선택 */
+  .gesture-select { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .gesture-btn {
+    cursor: pointer; background: rgba(255,255,255,0.07);
+    border: 1.5px solid rgba(255,255,255,0.1); border-radius: 10px;
+    padding: 10px 8px; text-align: center; transition: all 0.15s;
+    color: rgba(255,255,255,0.7); font-size: 0.85rem; font-weight: 500;
+  }
+  .gesture-btn:hover { background: rgba(255,255,255,0.12); }
+  .gesture-btn.selected { background: rgba(78,205,196,0.2); border-color: var(--teal); color: var(--teal); }
+  .gesture-btn.complete { background: rgba(107,203,119,0.15); border-color: var(--green); color: var(--green); }
+  .gesture-btn .g-emoji { font-size: 1.4rem; display: block; margin-bottom: 4px; }
+  .gesture-btn .g-count { font-size: 0.7rem; color: rgba(255,255,255,0.4); margin-top: 2px; }
+  .gesture-btn.selected .g-count { color: var(--teal); opacity: 0.8; }
+  .gesture-btn.complete .g-count { color: var(--green); opacity: 0.8; }
+
+  /* 현재 제스처 */
+  .current-gesture {
+    display: flex; align-items: center; gap: 12px;
+    background: rgba(78,205,196,0.1); border: 1px solid rgba(78,205,196,0.3);
+    border-radius: 10px; padding: 12px; margin-bottom: 12px;
+  }
+  .current-gesture .emoji { font-size: 2rem; }
+  .current-gesture .info { flex: 1; }
+  .current-gesture .name { font-size: 1.1rem; font-weight: 700; color: var(--teal); }
+  .current-gesture .desc { font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 2px; }
+
+  /* 상태 배지 */
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 0.8rem; font-weight: 500; padding: 4px 10px;
+    border-radius: 20px; white-space: nowrap;
+  }
+  .status-badge.ready     { background: rgba(78,205,196,0.15);  color: var(--teal);   border: 1px solid rgba(78,205,196,0.3); }
+  .status-badge.recording { background: rgba(255,107,107,0.15); color: var(--red);    border: 1px solid rgba(255,107,107,0.4); }
+  .status-badge.resting   { background: rgba(255,159,67,0.15);  color: var(--orange); border: 1px solid rgba(255,159,67,0.4); }
+  .status-badge.done      { background: rgba(107,203,119,0.15); color: var(--green);  border: 1px solid rgba(107,203,119,0.3); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .dot.blink { animation: blink 1s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  /* 통계 */
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat-box { background: rgba(255,255,255,0.05); border-radius: 8px; padding: 10px; text-align: center; }
+  .stat-num { font-size: 1.8rem; font-weight: 900; color: var(--yellow); line-height: 1; }
+  .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.4); margin-top: 4px; }
+
+  /* 로그 */
+  .log {
+    background: rgba(0,0,0,0.3); border-radius: 8px; padding: 10px;
+    height: 130px; overflow-y: auto; font-size: 0.78rem;
+    line-height: 1.7; color: rgba(255,255,255,0.6);
+  }
+  .log .log-ok   { color: var(--green); }
+  .log .log-info { color: var(--teal); }
+  .log .log-warn { color: var(--yellow); }
+  .log .log-auto { color: var(--orange); }
+
+  .save-row { display: flex; gap: 8px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div style="max-width:1100px;margin:0 auto;">
+  <h1>🎯 제스처 데이터 수집기</h1>
+  <p class="subtitle">AI 학습용 포즈 데이터 수집 · 제스처당 목표: 50개 샘플</p>
+
+  <div class="layout">
+
+    <!-- 왼쪽: 카메라 -->
+    <div class="cam-section">
+
+      <!-- 현재 선택 제스처 -->
+      <div class="current-gesture">
+        <span class="emoji" id="currentEmoji">👈</span>
+        <div class="info">
+          <div class="name" id="currentName">제스처를 선택하세요</div>
+          <div class="desc" id="currentDesc">오른쪽에서 제스처를 클릭하세요</div>
+        </div>
+        <span id="statusBadge" class="status-badge ready">
+          <span class="dot"></span> 대기 중
+        </span>
+      </div>
+
+      <!-- 카메라 뷰 -->
+      <div class="cam-wrap">
+        <video id="videoEl" autoplay muted playsinline></video>
+        <canvas id="poseCanvas"></canvas>
+
+        <!-- 카운트다운 -->
+        <div class="overlay-base countdown-overlay" id="countdownOverlay">
+          <div class="countdown-num" id="countdownNum">3</div>
+          <div class="countdown-sub" id="countdownSub">포즈를 취하세요!</div>
+        </div>
+
+        <!-- 녹화 중 -->
+        <div class="overlay-base record-overlay" id="recordOverlay">
+          <div class="record-frame-num" id="recordFrame">0</div>
+          <div class="record-sub" id="recordSub">프레임 수집 중...</div>
+        </div>
+
+        <!-- 쉬는 시간 -->
+        <div class="overlay-base rest-overlay" id="restOverlay">
+          <div class="rest-num" id="restNum">2</div>
+          <div class="rest-sub" id="restSub">잠깐 쉬세요 · 다음 촬영 준비</div>
+        </div>
+      </div>
+
+      <!-- 진행바 -->
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span>현재 제스처 진행률</span>
+          <span id="progressCount">0 / 50</span>
+        </div>
+        <div class="progress-bg">
+          <div class="progress-fill" id="progressFill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- 연속 촬영 설정 -->
+      <div class="auto-settings">
+        <span>연속 촬영</span>
+        <input type="number" id="autoCount" value="10" min="1" max="50"/>
+        <span>회 &nbsp;·&nbsp; 촬영 간격</span>
+        <input type="number" id="autoInterval" value="2" min="1" max="5"/>
+        <span>초</span>
+      </div>
+
+      <!-- 버튼 행 -->
+      <div class="btn-row">
+        <button class="btn btn-record" id="recordBtn" onclick="startSingle()" disabled>● 1회 촬영</button>
+        <button class="btn btn-auto"   id="autoBtn"   onclick="startAuto()"   disabled>⟳ 연속 촬영</button>
+        <button class="btn btn-stop hidden" id="stopBtn" onclick="stopAuto()">■ 중단</button>
+      </div>
+
+    </div>
+
+    <!-- 오른쪽: 패널 -->
+    <div class="panel">
+
+      <!-- 제스처 선택 -->
+      <div class="card">
+        <div class="card-title">제스처 선택</div>
+        <div class="gesture-select" id="gestureSelect"></div>
+      </div>
+
+      <!-- 수집 현황 -->
+      <div class="card">
+        <div class="card-title">수집 현황</div>
+        <div class="stats-grid">
+          <div class="stat-box">
+            <div class="stat-num" id="totalSamples">0</div>
+            <div class="stat-label">총 샘플 수</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" id="readyGestures">0</div>
+            <div class="stat-label">완료된 제스처</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 로그 -->
+      <div class="card">
+        <div class="card-title">수집 로그</div>
+        <div class="log" id="logEl"><span class="log-info">시스템 시작 중...</span></div>
+      </div>
+
+      <!-- 저장 -->
+      <div class="card">
+        <div class="card-title">데이터 저장</div>
+        <p style="font-size:0.8rem;color:rgba(255,255,255,0.5);margin-bottom:12px;line-height:1.6;">
+          수집된 데이터를 JSON 파일로 저장합니다.<br>
+          기존 airplane 데이터와 나중에 합칩니다.
+        </p>
+        <div class="save-row">
+          <button class="btn btn-save"  onclick="saveData()">💾 JSON 저장</button>
+          <button class="btn btn-clear" onclick="clearData()">🗑 초기화</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+// 제스처 정의 (새 리스트)
+// ══════════════════════════════════════════════
+const GESTURES = [
+  { id: 'airplane',      label: '비행기', emoji: '✈️',  desc: '양팔을 옆으로 벌려요' },
+  { id: 'baseball',      label: '야구',   emoji: '⚾',  desc: '배트 스윙 자세를 취해요' },
+  { id: 'star',          label: '별',     emoji: '⭐',  desc: '팔다리를 모두 벌려요' },
+  { id: 'hands_up',      label: '손들기', emoji: '🙌',  desc: '양손을 높이 들어요' },
+  { id: 'muscle',        label: '근육',   emoji: '💪',  desc: '보디빌더 근육 포즈' },
+  { id: 'salute',        label: '경례',   emoji: '🫡',  desc: '이마에 손을 대요' },
+  { id: 'wave',          label: '인사',   emoji: '👋',  desc: '한 손을 흔들어요' },
+  { id: 'superhero',     label: '히어로', emoji: '🦸',  desc: '영웅 포즈를 취해요' },
+  { id: 'robot',         label: '로봇',   emoji: '🤖',  desc: '딱딱한 로봇 자세' },
+  { id: 'guitar',        label: '기타',   emoji: '🎸',  desc: '에어기타를 쳐요' },
+  { id: 'weightlifting', label: '역도',   emoji: '🏋️',  desc: '바벨을 들어올리는 자세' },
+  { id: 'boxing',        label: '복싱',   emoji: '🥊',  desc: '복싱 펀치 자세를 취해요' },
+];
+
+const TARGET_PER_GESTURE = 50;
+const FRAMES_PER_SAMPLE  = 30;
+
+const POSE_CONNECTIONS = [
+  [11,12],[11,13],[13,15],[12,14],[14,16],
+  [11,23],[12,24],[23,24],
+  [23,25],[25,27],[24,26],[26,28],
+  [0,1],[1,3],[0,2],[2,4],
+  [5,7],[7,9],[6,8],[8,10],
+];
+
+// ══════════════════════════════════════════════
+// 상태
+// ══════════════════════════════════════════════
+const state = {
+  selectedGesture: null,
+  isRecording:     false,
+  isCountingDown:  false,
+  isAutoMode:      false,
+  autoRemaining:   0,
+  currentFrames:   [],
+  collectedData:   {},   // { id: [sample, ...] }
+  poseBuffer:      [],
+};
+GESTURES.forEach(g => state.collectedData[g.id] = []);
+
+let poseDetector = null;
+let mpCamera     = null;
+let restInterval = null;
+
+// ══════════════════════════════════════════════
+// 초기화
+// ══════════════════════════════════════════════
+window.onload = () => { buildGestureGrid(); initCamera(); };
+
+function buildGestureGrid() {
+  document.getElementById('gestureSelect').innerHTML = GESTURES.map(g => `
+    <div class="gesture-btn" id="gbtn-${g.id}" onclick="selectGesture('${g.id}')">
+      <span class="g-emoji">${g.emoji}</span>${g.label}
+      <div class="g-count" id="gcount-${g.id}">0 / ${TARGET_PER_GESTURE}</div>
+    </div>`).join('');
+}
+
+async function initCamera() {
+  addLog('카메라를 시작합니다...', 'info');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width:640, height:480, facingMode:'user' }, audio:false
+    });
+    const video = document.getElementById('videoEl');
+    video.srcObject = stream;
+    await new Promise(r => video.onloadedmetadata = r);
+    addLog('MediaPipe Pose 로딩 중...', 'info');
+
+    poseDetector = new Pose({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+    poseDetector.setOptions({ modelComplexity:1, smoothLandmarks:true, enableSegmentation:false, minDetectionConfidence:0.5, minTrackingConfidence:0.5 });
+    poseDetector.onResults(onPoseResults);
+
+    mpCamera = new Camera(video, {
+      onFrame: async () => { if (poseDetector) await poseDetector.send({ image: video }); },
+      width:640, height:480
+    });
+    await mpCamera.start();
+    addLog('준비 완료! 제스처를 선택하세요.', 'ok');
+  } catch(e) {
+    addLog('카메라 오류: ' + e.message, 'warn');
+  }
+}
+
+// ══════════════════════════════════════════════
+// 포즈 감지
+// ══════════════════════════════════════════════
+function onPoseResults(results) {
+  const canvas = document.getElementById('poseCanvas');
+  const video  = document.getElementById('videoEl');
+  canvas.width = video.videoWidth || 640;
+  canvas.height = video.videoHeight || 480;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!results.poseLandmarks) return;
+
+  const lm = results.poseLandmarks.map(l => [
+    parseFloat(l.x.toFixed(4)),
+    parseFloat(l.y.toFixed(4)),
+    parseFloat(l.z.toFixed(4))
+  ]);
+
+  state.poseBuffer.push(lm);
+  if (state.poseBuffer.length > FRAMES_PER_SAMPLE) state.poseBuffer.shift();
+
+  if (state.isRecording) {
+    state.currentFrames.push(lm);
+    document.getElementById('recordFrame').textContent = state.currentFrames.length;
+    if (state.currentFrames.length >= FRAMES_PER_SAMPLE) finishCapture();
+  }
+
+  drawSkeleton(ctx, results.poseLandmarks, canvas.width, canvas.height);
+}
+
+function drawSkeleton(ctx, lms, w, h) {
+  ctx.lineWidth = 2.5;
+  POSE_CONNECTIONS.forEach(([a,b]) => {
+    const la=lms[a], lb=lms[b];
+    if (!la||!lb||(la.visibility||0)<0.3||(lb.visibility||0)<0.3) return;
+    const g=ctx.createLinearGradient(la.x*w,la.y*h,lb.x*w,lb.y*h);
+    g.addColorStop(0,'rgba(78,205,196,0.85)');
+    g.addColorStop(1,'rgba(199,125,255,0.85)');
+    ctx.strokeStyle=g; ctx.beginPath();
+    ctx.moveTo(la.x*w,la.y*h); ctx.lineTo(lb.x*w,lb.y*h); ctx.stroke();
+  });
+  lms.forEach((lm,i) => {
+    if ((lm.visibility||0)<0.35) return;
+    ctx.beginPath();
+    ctx.arc(lm.x*w,lm.y*h,i===0?6:4,0,Math.PI*2);
+    ctx.fillStyle=i===0?'#ffd93d':'rgba(255,255,255,0.9)';
+    ctx.shadowBlur=6; ctx.shadowColor=i===0?'#ffd93d':'#4ecdc4';
+    ctx.fill(); ctx.shadowBlur=0;
+  });
+}
+
+// ══════════════════════════════════════════════
+// 제스처 선택
+// ══════════════════════════════════════════════
+function selectGesture(id) {
+  if (state.isRecording || state.isCountingDown || state.isAutoMode) return;
+  state.selectedGesture = GESTURES.find(g => g.id === id);
+  document.querySelectorAll('.gesture-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('gbtn-'+id).classList.add('selected');
+  const g = state.selectedGesture;
+  document.getElementById('currentEmoji').textContent = g.emoji;
+  document.getElementById('currentName').textContent  = g.label;
+  document.getElementById('currentDesc').textContent  = g.desc;
+  document.getElementById('recordBtn').disabled = false;
+  document.getElementById('autoBtn').disabled   = false;
+  updateProgress(id);
+  addLog(`제스처 선택: ${g.label}`, 'info');
+}
+
+// ══════════════════════════════════════════════
+// 1회 촬영
+// ══════════════════════════════════════════════
+function startSingle() {
+  if (!state.selectedGesture || state.isCountingDown || state.isRecording) return;
+  state.isAutoMode = false;
+  runCountdown(3, '포즈를 취하세요!', () => beginCapture());
+}
+
+// ══════════════════════════════════════════════
+// 연속 촬영
+// ══════════════════════════════════════════════
+function startAuto() {
+  if (!state.selectedGesture || state.isCountingDown || state.isRecording) return;
+  const count = parseInt(document.getElementById('autoCount').value) || 10;
+  state.isAutoMode    = true;
+  state.autoRemaining = count;
+  setBtns(false, true);
+  addLog(`연속 촬영 시작: ${count}회`, 'auto');
+  runCountdown(3, `${count}회 연속 촬영 · 포즈를 취하세요!`, () => beginCapture());
+}
+
+function stopAuto() {
+  state.isAutoMode    = false;
+  state.autoRemaining = 0;
+  state.isRecording   = false;
+  clearInterval(restInterval);
+  hideAllOverlays();
+  setStatus('ready', '대기 중');
+  setBtns(true, false);
+  addLog('연속 촬영 중단됨', 'warn');
+}
+
+// ══════════════════════════════════════════════
+// 카운트다운
+// ══════════════════════════════════════════════
+function runCountdown(sec, subText, cb) {
+  state.isCountingDown = true;
+  setStatus('recording', '준비 중...');
+  const overlay = document.getElementById('countdownOverlay');
+  const numEl   = document.getElementById('countdownNum');
+  const subEl   = document.getElementById('countdownSub');
+  numEl.textContent = sec;
+  subEl.textContent = subText;
+  overlay.classList.add('active');
+  let n = sec;
+  const iv = setInterval(() => {
+    n--;
+    if (n <= 0) {
+      clearInterval(iv);
+      overlay.classList.remove('active');
+      state.isCountingDown = false;
+      cb();
+    } else {
+      numEl.textContent = n;
+    }
+  }, 1000);
+}
+
+// ══════════════════════════════════════════════
+// 캡처 시작 / 완료
+// ══════════════════════════════════════════════
+function beginCapture() {
+  state.isRecording   = true;
+  state.currentFrames = [];
+  const subText = state.isAutoMode ? `${state.autoRemaining}회 남음` : '프레임 수집 중...';
+  document.getElementById('recordSub').textContent = subText;
+  document.getElementById('recordOverlay').classList.add('active');
+  setStatus('recording', '녹화 중...');
+}
+
+function finishCapture() {
+  state.isRecording = false;
+  document.getElementById('recordOverlay').classList.remove('active');
+
+  const gId = state.selectedGesture.id;
+  state.collectedData[gId].push({ label: gId, sequence: [...state.currentFrames] });
+
+  const count = state.collectedData[gId].length;
+  document.getElementById(`gcount-${gId}`).textContent = `${count} / ${TARGET_PER_GESTURE}`;
+  if (count >= TARGET_PER_GESTURE) {
+    document.getElementById(`gbtn-${gId}`).classList.add('complete');
+    addLog(`🎉 ${state.selectedGesture.label} 수집 완료!`, 'ok');
+  } else {
+    addLog(`✓ ${state.selectedGesture.label} 샘플 저장 (${count}/${TARGET_PER_GESTURE})`, 'ok');
+  }
+  updateProgress(gId);
+  updateStats();
+
+  // 연속촬영 처리
+  if (state.isAutoMode && state.autoRemaining > 0) {
+    state.autoRemaining--;
+    if (state.autoRemaining <= 0 || count >= TARGET_PER_GESTURE) {
+      endAutoMode();
+    } else {
+      startRest();
+    }
+  } else {
+    setStatus('ready', '대기 중');
+    setBtns(true, false);
+  }
+}
+
+// ══════════════════════════════════════════════
+// 쉬는 시간 (연속촬영 사이)
+// ══════════════════════════════════════════════
+function startRest() {
+  const interval = parseInt(document.getElementById('autoInterval').value) || 2;
+  setStatus('resting', '쉬는 중...');
+  const overlay = document.getElementById('restOverlay');
+  const numEl   = document.getElementById('restNum');
+  const subEl   = document.getElementById('restSub');
+  numEl.textContent = interval;
+  subEl.textContent = `잠깐 쉬세요 · ${state.autoRemaining}회 남음`;
+  overlay.classList.add('active');
+  let n = interval;
+  restInterval = setInterval(() => {
+    n--;
+    numEl.textContent = n;
+    if (n <= 0) {
+      clearInterval(restInterval);
+      overlay.classList.remove('active');
+      runCountdown(2, `${state.autoRemaining}회 남음 · 포즈를 취하세요!`, () => beginCapture());
+    }
+  }, 1000);
+}
+
+function endAutoMode() {
+  state.isAutoMode = false; state.autoRemaining = 0;
+  hideAllOverlays();
+  setStatus('ready', '완료!');
+  setBtns(true, false);
+  addLog('연속 촬영 완료!', 'auto');
+}
+
+function hideAllOverlays() {
+  ['countdownOverlay','recordOverlay','restOverlay'].forEach(id =>
+    document.getElementById(id).classList.remove('active')
+  );
+}
+
+// ══════════════════════════════════════════════
+// UI 헬퍼
+// ══════════════════════════════════════════════
+function setBtns(showNormal, showStop) {
+  document.getElementById('recordBtn').disabled = !showNormal;
+  document.getElementById('autoBtn').disabled   = !showNormal;
+  document.getElementById('stopBtn').classList.toggle('hidden', !showStop);
+}
+
+function updateProgress(gId) {
+  const count = state.collectedData[gId].length;
+  const pct   = Math.min((count / TARGET_PER_GESTURE) * 100, 100);
+  document.getElementById('progressFill').style.width  = pct + '%';
+  document.getElementById('progressCount').textContent = `${count} / ${TARGET_PER_GESTURE}`;
+}
+
+function updateStats() {
+  let total=0, ready=0;
+  GESTURES.forEach(g => {
+    const c = state.collectedData[g.id].length;
+    total += c;
+    if (c >= TARGET_PER_GESTURE) ready++;
+  });
+  document.getElementById('totalSamples').textContent  = total;
+  document.getElementById('readyGestures').textContent = ready;
+}
+
+function setStatus(type, text) {
+  const el = document.getElementById('statusBadge');
+  el.className = 'status-badge ' + type;
+  el.innerHTML = `<span class="dot${type==='recording'||type==='resting'?' blink':''}"></span> ${text}`;
+}
+
+function addLog(msg, type='') {
+  const log  = document.getElementById('logEl');
+  const line = document.createElement('div');
+  line.className = type ? 'log-'+type : '';
+  const t = new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  line.textContent = `[${t}] ${msg}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ══════════════════════════════════════════════
+// 저장 / 초기화
+// ══════════════════════════════════════════════
+function saveData() {
+  let total=0; const all=[];
+  GESTURES.forEach(g => state.collectedData[g.id].forEach(s => { all.push(s); total++; }));
+  if (!total) { addLog('저장할 데이터가 없습니다!','warn'); return; }
+
+  const out = {
+    version:'1.0', createdAt: new Date().toISOString(),
+    totalSamples: total, framesPerSample: FRAMES_PER_SAMPLE, landmarksPerFrame: 33,
+    gestures: GESTURES.map(g => ({ id:g.id, label:g.label, count:state.collectedData[g.id].length })),
+    samples: all
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type:'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `gesture_data_${Date.now()}.json`; a.click();
+  URL.revokeObjectURL(url);
+  addLog(`💾 저장 완료: ${total}개 샘플`, 'ok');
+}
+
+function clearData() {
+  if (!confirm('모든 수집 데이터를 삭제할까요?')) return;
+  GESTURES.forEach(g => {
+    state.collectedData[g.id] = [];
+    document.getElementById(`gcount-${g.id}`).textContent = `0 / ${TARGET_PER_GESTURE}`;
+    document.getElementById(`gbtn-${g.id}`).classList.remove('complete');
+  });
+  updateStats();
+  if (state.selectedGesture) updateProgress(state.selectedGesture.id);
+  addLog('데이터 초기화 완료','warn');
+}
+</script>
+</body>
+</html>
