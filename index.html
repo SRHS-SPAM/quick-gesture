@@ -698,12 +698,58 @@ let gestureLabels = [];
 
 async function loadModel() {
   try {
-    const res = await fetch('labels.json');
-    gestureLabels = await res.json();
-    console.log('라벨 로드 완료:', gestureLabels);
+    const res  = await fetch('web_model/model_weights.json');
+    const data = await res.json();
 
-    tfModel = await tf.loadLayersModel('web_model/model.json');
-    console.log('모델 로드 완료!');
+    gestureLabels = data.labels;
+    console.log('라벨 로드:', gestureLabels);
+
+    // TF.js로 모델 직접 재구성
+    const inputs = tf.input({ shape: [30, 99] });
+    let x = inputs;
+
+    for (const layer of data.layers) {
+      const weights = layer.weights;
+
+      if (layer.class_name === 'LSTM') {
+        const cfg = layer.config;
+        const lstmLayer = tf.layers.lstm({
+          units:           cfg.units,
+          returnSequences: cfg.return_sequences,
+          name:            layer.name
+        });
+        x = lstmLayer.apply(x);
+        if (weights.length > 0) {
+          const w = weights.map(w =>
+            tf.tensor(w.data, w.shape)
+          );
+          lstmLayer.setWeights(w);
+        }
+
+      } else if (layer.class_name === 'Dense') {
+        const cfg = layer.config;
+        const denseLayer = tf.layers.dense({
+          units:      cfg.units,
+          activation: cfg.activation,
+          name:       layer.name
+        });
+        x = denseLayer.apply(x);
+        if (weights.length > 0) {
+          const w = weights.map(w =>
+            tf.tensor(w.data, w.shape)
+          );
+          denseLayer.setWeights(w);
+        }
+
+      } else if (layer.class_name === 'Dropout') {
+        // Dropout은 추론 시 무시
+        continue;
+      }
+    }
+
+    tfModel = tf.model({ inputs, outputs: x });
+    console.log('모델 재구성 완료!');
+
   } catch(e) {
     console.error('모델 로드 실패:', e);
   }
