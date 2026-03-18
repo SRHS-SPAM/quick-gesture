@@ -888,7 +888,7 @@ function drawSkeleton(ctx, landmarks, w, h) {
 async function runClassification() {
   if (gameState.poseSequence.length < 5) return;
 
-  const probs = classifyGesture(gameState.poseSequence);
+  const probs = await classifyGesture(gameState.poseSequence);
   if (!probs) return;
 
   const sorted = Object.entries(probs).sort((a,b) => b[1]-a[1]);
@@ -1072,7 +1072,9 @@ function updateProgressDots() {
 }
 
 function confirmGesture() {
-  if (gameState.phase !== 'playing') return;
+  if (gameState.phase !== 'playing') {
+    runClassification().catch(e => console.warn(e));
+  }
   gameState.phase = 'confirming';
 
   const gesture = gameState.selectedGestures[gameState.currentIdx];
