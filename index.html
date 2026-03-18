@@ -694,109 +694,48 @@ let poseDetector = null;
 let mediaCamera = null;
 let videoStream = null;
 let tfModel = null;
+let gestureLabels = [];
+
+async function loadModel() {
+  try {
+    const res = await fetch('labels.json');
+    gestureLabels = await res.json();
+    console.log('라벨 로드 완료:', gestureLabels);
+
+    tfModel = await tf.loadLayersModel('web_model/model.json');
+    console.log('모델 로드 완료!');
+  } catch(e) {
+    console.error('모델 로드 실패:', e);
+  }
+}
 
 // ═══════════════════════════════════════════════
 // RULE-BASED GESTURE CLASSIFIER
 // ═══════════════════════════════════════════════
-function classifyGesture(sequence) {
-  if (!sequence || sequence.length < 5) return null;
-  const frame = sequence[sequence.length - 1];
-  if (!frame || frame.length < 33) return null;
+async function classifyGesture(sequence) {
+  // 모델 없으면 null
+  if (!tfModel || !sequence || sequence.length < 30) return null;
 
-  const scores = {};
-  GESTURES.forEach(g => scores[g.id] = 0);
+  // 입력 데이터 준비
+  // sequence: [30프레임][33관절][3좌표]
+  const input = sequence.map(frame =>
+    frame.reduce((acc, lm) => acc.concat(lm), [])
+  );
 
-  const lm = (i) => frame[i] || [0.5, 0.5, 0];
-  const dist = (a, b) => Math.hypot(lm(a)[0]-lm(b)[0], lm(a)[1]-lm(b)[1]);
-  const y = (i) => lm(i)[1];
-  const x = (i) => lm(i)[0];
+  // TensorFlow.js 로 추론
+  const tensor = tf.tensor3d([input], [1, 30, 99]);
+  const result = tfModel.predict(tensor);
+  const probs  = await result.data();
+  tensor.dispose();
+  result.dispose();
 
-  const nose = lm(0);
-  const lShoulder = lm(11), rShoulder = lm(12);
-  const lElbow = lm(13),    rElbow = lm(14);
-  const lWrist = lm(15),    rWrist = lm(16);
-  const lHip = lm(23),      rHip = lm(24);
-  const lKnee = lm(25),     rKnee = lm(26);
-  const lAnkle = lm(27),    rAnkle = lm(28);
-
-  const shoulderW = Math.abs(lShoulder[0] - rShoulder[0]);
-  const hipW = Math.abs(lHip[0] - rHip[0]);
-  const torsoH = Math.abs((lShoulder[1]+rShoulder[1])/2 - (lHip[1]+rHip[1])/2);
-
-  const bothWristsAboveHead = lWrist[1] < nose[1] && rWrist[1] < nose[1];
-  const bothWristsAboveShoulders = lWrist[1] < lShoulder[1] && rWrist[1] < rShoulder[1];
-  const wristSpread = Math.abs(lWrist[0] - rWrist[0]);
-  const ankleSpread = Math.abs(lAnkle[0] - rAnkle[0]);
-  const wristsAtShoulderHeight = Math.abs(lWrist[1] - lShoulder[1]) < 0.08 && Math.abs(rWrist[1] - rShoulder[1]) < 0.08;
-  const armsWide = wristSpread > shoulderW * 1.8;
-
-  // AIRPLANE
-  if (armsWide && wristsAtShoulderHeight) scores['airplane'] += 0.7;
-  if (armsWide && Math.abs(lWrist[1] - rWrist[1]) < 0.06) scores['airplane'] += 0.3;
-
-  // STAR
-  if (armsWide && bothWristsAboveShoulders && ankleSpread > hipW * 1.4) scores['star'] += 0.8;
-  if (wristSpread > shoulderW * 2.0 && ankleSpread > hipW * 1.8) scores['star'] += 0.2;
-
-  // HANDS_UP
-  if (bothWristsAboveHead) scores['hands_up'] += 0.6;
-  if (bothWristsAboveHead && wristSpread < shoulderW * 1.2) scores['hands_up'] += 0.3;
-
-  // TREE
-  if (bothWristsAboveHead && lWrist[0] < lShoulder[0] && rWrist[0] > rShoulder[0]) scores['tree'] += 0.5;
-  if (bothWristsAboveHead && ankleSpread < hipW * 0.5) scores['tree'] += 0.4;
-
-  // MUSCLE
-  const elbowsUp = lElbow[1] < lShoulder[1] && rElbow[1] < rShoulder[1];
-  const wristsNearShoulderLevel = Math.abs(lWrist[1] - lShoulder[1]) < 0.12;
-  if (elbowsUp && wristsNearShoulderLevel && wristSpread < shoulderW * 1.6) scores['muscle'] += 0.7;
-
-  // SALUTE
-  const lWristNearHead = lWrist[1] < nose[1] + 0.05 && lWrist[1] > nose[1] - 0.12;
-  const rWristNearHead = rWrist[1] < nose[1] + 0.05 && rWrist[1] > nose[1] - 0.12;
-  if ((lWristNearHead || rWristNearHead) && !bothWristsAboveShoulders) scores['salute'] += 0.8;
-
-  // WAVE
-  const wristHeightDiff = Math.abs(lWrist[1] - rWrist[1]);
-  if (wristHeightDiff > 0.25 && (lWrist[1] < lShoulder[1] || rWrist[1] < rShoulder[1])) scores['wave'] += 0.7;
-
-  // SUPERHERO
-  const oneWristUp = (lWrist[1] < lShoulder[1] - 0.1) !== (rWrist[1] < rShoulder[1] - 0.1);
-  if (oneWristUp && wristHeightDiff > 0.18) scores['superhero'] += 0.65;
-
-  // ROBOT
-  const armsLow = lWrist[1] > lHip[1] && rWrist[1] > rHip[1];
-  if (armsLow && wristSpread < shoulderW * 1.1) scores['robot'] += 0.55;
-
-  // GUITAR
-  const lWristNearChest = Math.abs(lWrist[0] - (lShoulder[0]+lHip[0])/2) < 0.12;
-  const rArmExtended = Math.abs(rWrist[0] - rShoulder[0]) > 0.15;
-  if ((lWristNearChest && rArmExtended) || (dist(15,12) < 0.18 && dist(16,11) > 0.25)) scores['guitar'] += 0.65;
-
-  // SQUAT
-  const kneesDown = lKnee[1] > lHip[1] + 0.12 && rKnee[1] > rHip[1] + 0.12;
-  const hipLow = (lHip[1]+rHip[1])/2 > 0.65;
-  if (kneesDown && hipLow) scores['squat'] += 0.8;
-
-  // KICK
-  const kneeHeightDiff = Math.abs(lKnee[1] - rKnee[1]);
-  const ankleHeightDiff = Math.abs(lAnkle[1] - rAnkle[1]);
-  if (kneeHeightDiff > 0.18 || ankleHeightDiff > 0.2) scores['kick'] += 0.7;
-
-  // Normalize
-  const total = Object.values(scores).reduce((a,b) => a+b, 0.001);
-  const probs = {};
-  Object.keys(scores).forEach(k => probs[k] = scores[k] / total);
-
-  // Add noise
-  Object.keys(probs).forEach(k => {
-    probs[k] = Math.max(0, probs[k] + (Math.random() - 0.5) * 0.04);
+  // 결과를 { 제스처이름: 확률 } 형태로 변환
+  const output = {};
+  gestureLabels.forEach((label, i) => {
+    output[label] = probs[i];
   });
 
-  const total2 = Object.values(probs).reduce((a,b) => a+b, 0.001);
-  Object.keys(probs).forEach(k => probs[k] /= total2);
-
-  return probs;
+  return output;
 }
 
 // ═══════════════════════════════════════════════
@@ -946,7 +885,7 @@ function drawSkeleton(ctx, landmarks, w, h) {
 // ═══════════════════════════════════════════════
 // CLASSIFICATION & GAME LOGIC
 // ═══════════════════════════════════════════════
-function runClassification() {
+async function runClassification() {
   if (gameState.poseSequence.length < 5) return;
 
   const probs = classifyGesture(gameState.poseSequence);
@@ -1032,6 +971,7 @@ function selectGestures() {
 }
 
 function beginGame() {
+  loadModel();
   gameState.selectedGestures = selectGestures();
   gameState.currentIdx = 0;
   gameState.score = 0;
