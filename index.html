@@ -9,8 +9,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-
-<!-- TensorFlow.js 제거, ONNX Runtime으로 교체 (훨씬 가벼움) -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.16.3/dist/ort.min.js"></script>
 
 <style>
@@ -28,7 +26,7 @@
   .star  { position: absolute; border-radius: 50%; background: #fff; animation: twinkle var(--d) ease-in-out infinite alternate; }
   @keyframes twinkle { from{opacity:.1;transform:scale(1);}to{opacity:.8;transform:scale(1.4);} }
 
-  #app { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+  #app { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 16px; }
 
   .screen { width: 100%; max-width: 900px; animation: popIn .5s cubic-bezier(.34,1.56,.64,1); }
   @keyframes popIn { from{opacity:0;transform:scale(.85) translateY(20px);}to{opacity:1;transform:scale(1) translateY(0);} }
@@ -53,8 +51,8 @@
   .btn-primary { background: var(--yellow); color: #222; font-size: 1.25rem; padding: 16px 48px; }
   .btn-ghost   { background: var(--card); color: #fff; border: 1px solid rgba(255,255,255,.2); backdrop-filter: blur(8px); }
 
+  /* 게임 화면은 display:flex 로 직접 제어 */
   #game { display: none; flex-direction: column; gap: 14px; }
-  #game.active { display: flex; }
 
   .top-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .hud-pill { background: var(--card); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 8px 16px; backdrop-filter: blur(10px); }
@@ -105,8 +103,8 @@
   .pred-bar-fill { height: 100%; border-radius: 4px; transition: width .3s; }
   .pred-pct      { font-size: .75rem; font-weight: 500; color: rgba(255,255,255,.6); width: 34px; text-align: right; flex-shrink: 0; }
 
+  /* 결과 화면 */
   #result { display: none; text-align: center; }
-  #result.active { display: block; }
   .result-title  { font-size: clamp(1.8rem,5vw,3rem); font-weight: 700; margin-bottom: 8px; }
   .score-display { font-size: 5rem; font-weight: 900; color: var(--yellow); text-shadow: 0 0 30px rgba(255,217,61,.5); line-height: 1; margin: 16px 0 8px; }
   .score-sub     { color: rgba(255,255,255,.6); font-size: 1rem; margin-bottom: 28px; }
@@ -127,7 +125,7 @@
   @keyframes flashOut { from{opacity:1;}to{opacity:0;} }
 
   #countdown-overlay { position: fixed; inset: 0; z-index: 100; background: rgba(15,12,41,.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; backdrop-filter: blur(6px); }
-  .countdown-num { font-size: 8rem; font-weight: 900; color: var(--yellow); text-shadow: 0 0 60px rgba(255,217,61,.6); animation: countPop .8s cubic-bezier(.34,1.56,.64,1); }
+  .countdown-num   { font-size: 8rem; font-weight: 900; color: var(--yellow); text-shadow: 0 0 60px rgba(255,217,61,.6); animation: countPop .8s cubic-bezier(.34,1.56,.64,1); }
   .countdown-label { font-size: 1.1rem; color: rgba(255,255,255,.6); font-weight: 500; }
   @keyframes countPop { from{opacity:0;transform:scale(2);}to{opacity:1;transform:scale(1);} }
 
@@ -221,7 +219,7 @@
     </div>
   </div>
 
-  <div id="result" class="screen hidden">
+  <div id="result" class="screen">
     <div id="resultEmoji" style="font-size:5rem;margin-bottom:8px;"></div>
     <h2 class="result-title" id="resultTitle">게임 종료!</h2>
     <div class="score-display" id="finalScore">0</div>
@@ -273,12 +271,6 @@ const GESTURES = [
   { id:'boxing',        label:'복싱',   emoji:'🥊',  desc:'복싱 펀치 자세를 취해요' },
 ];
 
-// labels.json 의 순서와 동일해야 함 (알파벳순)
-const LABEL_ORDER = [
-  'airplane','baseball','boxing','guitar','hands_up',
-  'muscle','robot','salute','star','superhero','wave','weightlifting'
-];
-
 const POSE_CONNECTIONS = [
   [11,12],[11,13],[13,15],[12,14],[14,16],
   [11,23],[12,24],[23,24],
@@ -302,37 +294,49 @@ let gameState = {
 
 let poseDetector = null;
 let mediaCamera  = null;
-let ortSession   = null;   // ONNX Runtime 세션
+let ortSession   = null;
+let labelOrder   = [];   // labels.json 에서 로드
 let modelReady   = false;
-
-// 추론 쓰로틀링 (너무 자주 실행 방지)
 let isInferring  = false;
 
 // ══════════════════════════════════════════════
-// 화면 전환
+// 화면 전환 (display 직접 제어)
 // ══════════════════════════════════════════════
 function showScreen(id) {
-  ['intro','permission','loading','game','result'].forEach(s => {
+  const screens = ['intro', 'permission', 'loading', 'game', 'result'];
+  screens.forEach(s => {
     const el = document.getElementById(s);
-    if (s === 'game') {
-      el.classList.toggle('active', s === id);
-      el.style.display = s === id ? 'flex' : 'none';
+    if (!el) return;
+    if (s === id) {
+      // 보여줄 화면
+      if (s === 'game') {
+        el.style.display = 'flex';
+      } else {
+        el.style.display = 'block';
+      }
+      el.classList.remove('hidden');
     } else {
-      el.classList.toggle('hidden', s !== id);
+      // 숨길 화면
+      el.style.display = 'none';
+      el.classList.add('hidden');
     }
   });
 }
 
 // ══════════════════════════════════════════════
-// ONNX 모델 로드
+// ONNX 모델 + 라벨 로드
 // ══════════════════════════════════════════════
 async function loadModel() {
   try {
+    // 1. labels.json 로드 (라벨 순서 확인)
+    setLoadingText('라벨 로딩 중...', 'labels.json 을 불러옵니다');
+    const labelRes = await fetch('labels.json');
+    labelOrder     = await labelRes.json();
+    console.log('라벨 순서:', labelOrder);
+
+    // 2. ONNX 모델 로드
     setLoadingText('AI 모델 로딩 중...', 'ONNX 모델을 불러오는 중입니다');
-
-    // ONNX Runtime WebAssembly 백엔드 설정
     ort.env.wasm.numThreads = 1;
-
     ortSession = await ort.InferenceSession.create(
       'gesture_model.onnx',
       { executionProviders: ['wasm'] }
@@ -344,41 +348,38 @@ async function loadModel() {
     console.log('출력:', ortSession.outputNames);
 
   } catch(e) {
-    console.error('ONNX 모델 로드 실패:', e);
+    console.error('모델 로드 실패:', e);
     modelReady = false;
   }
 }
 
 // ══════════════════════════════════════════════
-// 제스처 분류 (ONNX Runtime 사용)
+// 제스처 분류 (ONNX Runtime)
 // ══════════════════════════════════════════════
 async function classifyGesture(sequence) {
   if (!ortSession || !modelReady || sequence.length < 30) return null;
-  if (isInferring) return null;  // 이전 추론 중이면 스킵
+  if (isInferring) return null;
   isInferring = true;
 
   try {
-    // 입력 준비: [1, 30, 99] Float32Array
-    const input = sequence.slice(-30).map(frame =>
-      frame.reduce((a, lm) => a.concat(lm), [])
-    );
+    const input  = sequence.slice(-30).map(frame => frame.reduce((a, lm) => a.concat(lm), []));
     const flat   = new Float32Array(input.flat());
     const tensor = new ort.Tensor('float32', flat, [1, 30, 99]);
 
-    // 추론 실행
     const inputName  = ortSession.inputNames[0];
     const outputName = ortSession.outputNames[0];
     const results    = await ortSession.run({ [inputName]: tensor });
-    const probs      = results[outputName].data;
+    const raw        = Array.from(results[outputName].data);
 
-    // softmax (ONNX 출력이 logits인 경우 대비)
-    const expArr = Array.from(probs).map(Math.exp);
-    const sum    = expArr.reduce((a, b) => a + b, 0);
+    // softmax 적용
+    const maxVal  = Math.max(...raw);
+    const expArr  = raw.map(v => Math.exp(v - maxVal));
+    const sum     = expArr.reduce((a, b) => a + b, 0);
     const softmax = expArr.map(v => v / sum);
 
-    // { 제스처id: 확률 } 형태로 변환
+    // { 제스처id: 확률 } 변환
     const output = {};
-    LABEL_ORDER.forEach((label, i) => { output[label] = softmax[i]; });
+    labelOrder.forEach((label, i) => { output[label] = softmax[i] || 0; });
     return output;
 
   } catch(e) {
@@ -437,7 +438,7 @@ async function initMediaPipe() {
       });
 
       mediaCamera.start().then(async () => {
-        // MediaPipe 준비 완료 → ONNX 모델 로드
+        // MediaPipe 완료 후 ONNX 모델 로드
         await loadModel();
         setLoadingText('준비 완료!', '게임을 시작합니다...');
         setTimeout(() => { beginGame(); resolve(); }, 600);
@@ -466,7 +467,7 @@ function onPoseResults(results) {
   drawSkeleton(ctx, results.poseLandmarks, canvas.width, canvas.height);
 
   if (gameState.phase === 'playing') {
-    runClassification().catch(e => console.warn(e));
+    runClassification().catch(() => {});
   }
 }
 
@@ -512,7 +513,7 @@ async function runClassification() {
   updateAIGuess(topGesture, topConf);
 
   const current = gameState.selectedGestures[gameState.currentIdx];
-  if (topGesture === current.id && topConf > 0.45) {
+  if (current && topGesture === current.id && topConf > 0.45) {
     gameState.confirmFrames++;
     if (gameState.confirmFrames >= gameState.CONFIRM_THRESHOLD) confirmGesture();
   } else {
@@ -572,6 +573,7 @@ function beginGame() {
   gameState.predictionHistory = [];
   gameState.poseSequence      = [];
   gameState.confirmFrames     = 0;
+  gameState.phase             = 'waiting';
 
   buildProgressDots();
   showScreen('game');
@@ -585,19 +587,19 @@ function beginGame() {
 }
 
 function showCountdown(cb) {
-  const overlay  = document.getElementById('countdown-overlay');
-  const numEl    = document.getElementById('countdownNum');
-  const labelEl  = document.getElementById('countdownLabel');
+  const overlay = document.getElementById('countdown-overlay');
+  const numEl   = document.getElementById('countdownNum');
+  const lblEl   = document.getElementById('countdownLabel');
   overlay.classList.remove('hidden');
   let n = 3;
-  numEl.textContent   = n;
-  labelEl.textContent = '준비하세요!';
+  numEl.textContent = n;
+  lblEl.textContent = '준비하세요!';
   const iv = setInterval(() => {
     n--;
     if (n <= 0) {
       clearInterval(iv);
-      numEl.textContent   = '🚀';
-      labelEl.textContent = '시작!';
+      numEl.textContent = '🚀';
+      lblEl.textContent = '시작!';
       setTimeout(() => { overlay.classList.add('hidden'); cb(); }, 700);
     } else {
       numEl.textContent = n;
@@ -624,7 +626,10 @@ function startTimer() {
   gameState.timerInterval = setInterval(() => {
     gameState.timeLeft--;
     updateTimerUI();
-    if (gameState.timeLeft <= 0) { clearInterval(gameState.timerInterval); endGame(); }
+    if (gameState.timeLeft <= 0) {
+      clearInterval(gameState.timerInterval);
+      endGame();
+    }
   }, 1000);
 }
 
@@ -656,15 +661,18 @@ function updateProgressDots() {
 function confirmGesture() {
   if (gameState.phase !== 'playing') return;
   gameState.phase = 'confirming';
+
   const gesture = gameState.selectedGestures[gameState.currentIdx];
   gameState.score++;
   gameState.completedGestures.push({ gesture, hit: true });
   spawnSuccessEffects();
   updateScoreUI();
+
   setTimeout(() => {
     gameState.currentIdx++;
     if (gameState.currentIdx >= gameState.selectedGestures.length) {
-      clearInterval(gameState.timerInterval); endGame();
+      clearInterval(gameState.timerInterval);
+      endGame();
     } else {
       gameState.phase = 'playing';
       setCurrentGesture();
@@ -675,9 +683,14 @@ function confirmGesture() {
 function endGame() {
   gameState.phase = 'gameover';
   clearInterval(gameState.timerInterval);
+
+  // 못 맞춘 나머지 제스처 miss 처리
   for (let i = gameState.currentIdx; i < gameState.selectedGestures.length; i++) {
-    gameState.completedGestures.push({ gesture: gameState.selectedGestures[i], hit: false });
+    if (!gameState.completedGestures.find(c => c.gesture === gameState.selectedGestures[i])) {
+      gameState.completedGestures.push({ gesture: gameState.selectedGestures[i], hit: false });
+    }
   }
+
   showResultScreen();
 }
 
@@ -707,7 +720,7 @@ function spawnSuccessEffects() {
     const p = document.createElement('div');
     p.className = 'particle';
     const colors = ['#ffd93d','#4ecdc4','#ff6b6b','#6bcb77','#c77dff'];
-    const sz = 8 + Math.random()*12, angle = Math.random()*360, dist = 80+Math.random()*120;
+    const sz = 8+Math.random()*12, angle = Math.random()*360, dist = 80+Math.random()*120;
     p.style.cssText = `width:${sz}px;height:${sz}px;background:${colors[Math.floor(Math.random()*colors.length)]};left:${30+Math.random()*40}%;top:${30+Math.random()*40}%;--tx:${Math.cos(angle*Math.PI/180)*dist}px;--ty:${Math.sin(angle*Math.PI/180)*dist}px;`;
     document.body.appendChild(p);
     setTimeout(() => p.remove(), 1400);
