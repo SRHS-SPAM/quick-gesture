@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017/quick-gesture
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.11.0
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./ml/mlruns:/mlruns
+    command: mlflow server --host 0.0.0.0 --backend-store-uri /mlruns
+
+volumes:
+  mongo_data:

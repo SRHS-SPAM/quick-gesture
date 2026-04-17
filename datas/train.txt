@@ -1,0 +1,223 @@
+import json
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+import os
+
+# ══════════════════════════════════════════════
+# 설정
+# ══════════════════════════════════════════════
+DATA_FILE       = "gesture_data_1773745882052.json"  # JSON 파일 이름
+MODEL_SAVE_PATH = "gesture_model.h5"                 # 저장될 모델 파일
+FRAMES          = 30   # 샘플당 프레임 수
+LANDMARKS       = 33   # 관절 수
+COORDS          = 3    # x, y, z
+INPUT_SIZE      = LANDMARKS * COORDS  # 99
+
+# ══════════════════════════════════════════════
+# 1단계: 데이터 로드
+# ══════════════════════════════════════════════
+print("\n" + "="*50)
+print("1단계: 데이터 로드 중...")
+print("="*50)
+
+with open(DATA_FILE, "r", encoding="utf-8") as f:
+    raw = json.load(f)
+
+samples = raw["samples"]
+print(f"총 샘플 수: {len(samples)}")
+
+# 제스처별 샘플 수 출력
+from collections import Counter
+label_counts = Counter(s["label"] for s in samples)
+print("\n제스처별 샘플 수:")
+for label, count in sorted(label_counts.items()):
+    bar = "█" * (count // 2)
+    print(f"  {label:20s}: {count:3d}개  {bar}")
+
+# ══════════════════════════════════════════════
+# 2단계: 데이터 전처리
+# ══════════════════════════════════════════════
+print("\n" + "="*50)
+print("2단계: 데이터 전처리 중...")
+print("="*50)
+
+X = []  # 입력 (포즈 시퀀스)
+y = []  # 정답 (제스처 이름)
+
+skipped = 0
+for sample in samples:
+    seq = sample["sequence"]
+
+    # 프레임 수가 30이 아닌 샘플은 건너뜀
+    if len(seq) != FRAMES:
+        skipped += 1
+        continue
+
+    # 각 프레임을 99개 숫자로 펼치기
+    # [33개 관절 × 3좌표] = 99
+    frame_array = []
+    valid = True
+    for frame in seq:
+        if len(frame) != LANDMARKS:
+            valid = False
+            break
+        flat = []
+        for landmark in frame:
+            flat.extend(landmark[:3])  # x, y, z
+        frame_array.append(flat)
+
+    if not valid:
+        skipped += 1
+        continue
+
+    X.append(frame_array)
+    y.append(sample["label"])
+
+print(f"유효한 샘플: {len(X)}개")
+print(f"건너뜀: {skipped}개")
+
+# numpy 배열로 변환
+X = np.array(X, dtype=np.float32)  # shape: (샘플수, 30, 99)
+print(f"X shape: {X.shape}")       # 예: (600, 30, 99)
+
+# 라벨을 숫자로 변환
+# "airplane" → 0, "baseball" → 1, ...
+le = LabelEncoder()
+y_encoded = le.fit_transform(y)
+num_classes = len(le.classes_)
+
+print(f"\n제스처 클래스 ({num_classes}개): {list(le.classes_)}")
+
+# 클래스를 원핫인코딩으로 변환
+# 예: 0 → [1,0,0,...], 1 → [0,1,0,...]
+y_onehot = tf.keras.utils.to_categorical(y_encoded, num_classes)
+
+# 학습용 80% / 검증용 20% 분리
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y_onehot, test_size=0.2, random_state=42, stratify=y_encoded
+)
+print(f"\n학습 데이터: {len(X_train)}개")
+print(f"검증 데이터: {len(X_val)}개")
+
+# 라벨 인코더 저장 (나중에 게임에서 사용)
+label_list = list(le.classes_)
+with open("labels.json", "w", encoding="utf-8") as f:
+    json.dump(label_list, f, ensure_ascii=False, indent=2)
+print(f"\nlabels.json 저장 완료: {label_list}")
+
+# ══════════════════════════════════════════════
+# 3단계: 모델 설계
+# ══════════════════════════════════════════════
+print("\n" + "="*50)
+print("3단계: 모델 설계")
+print("="*50)
+
+model = Sequential([
+    # 첫 번째 LSTM층
+    # - 64개 유닛: 패턴을 기억하는 메모리 셀 개수
+    # - return_sequences=True: 다음 LSTM층에 시퀀스를 전달
+    LSTM(64, return_sequences=True, input_shape=(FRAMES, INPUT_SIZE)),
+    Dropout(0.3),  # 30% 뉴런을 랜덤으로 끄기 (과적합 방지)
+
+    # 두 번째 LSTM층
+    # - return_sequences=False: 마지막 출력만 전달
+    LSTM(64, return_sequences=False),
+    Dropout(0.3),
+
+    # 완전연결층: 특징을 압축
+    Dense(32, activation="relu"),
+    Dropout(0.2),
+
+    # 출력층: 제스처 개수만큼 출력
+    # softmax: 모든 확률의 합이 1이 되도록
+    Dense(num_classes, activation="softmax")
+])
+
+model.summary()
+
+# 모델 컴파일
+model.compile(
+    optimizer="adam",          # 학습률 자동 조정
+    loss="categorical_crossentropy",  # 분류 문제의 손실 함수
+    metrics=["accuracy"]       # 정확도 측정
+)
+
+# ══════════════════════════════════════════════
+# 4단계: 학습
+# ══════════════════════════════════════════════
+print("\n" + "="*50)
+print("4단계: 학습 시작!")
+print("="*50)
+print("(Epoch마다 loss↓ accuracy↑ 가 되면 정상입니다)\n")
+
+callbacks = [
+    # 검증 정확도가 10 epoch 동안 안 오르면 조기 종료
+    EarlyStopping(
+        monitor="val_accuracy",
+        patience=10,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    # 가장 좋은 모델 자동 저장
+    ModelCheckpoint(
+        MODEL_SAVE_PATH,
+        monitor="val_accuracy",
+        save_best_only=True,
+        verbose=1
+    )
+]
+
+history = model.fit(
+    X_train, y_train,
+    validation_data=(X_val, y_val),
+    epochs=100,       # 최대 100번 반복 (EarlyStopping이 알아서 멈춤)
+    batch_size=32,    # 한 번에 32개씩 학습
+    callbacks=callbacks
+)
+
+# ══════════════════════════════════════════════
+# 5단계: 결과 확인
+# ══════════════════════════════════════════════
+print("\n" + "="*50)
+print("5단계: 최종 결과")
+print("="*50)
+
+val_loss, val_acc = model.evaluate(X_val, y_val, verbose=0)
+print(f"최종 검증 정확도: {val_acc*100:.1f}%")
+print(f"최종 검증 손실:   {val_loss:.4f}")
+
+# 제스처별 정확도 확인
+print("\n제스처별 예측 결과:")
+y_pred = model.predict(X_val, verbose=0)
+y_pred_labels = le.inverse_transform(np.argmax(y_pred, axis=1))
+y_true_labels = le.inverse_transform(np.argmax(y_val, axis=1))
+
+from collections import defaultdict
+correct = defaultdict(int)
+total   = defaultdict(int)
+for true, pred in zip(y_true_labels, y_pred_labels):
+    total[true] += 1
+    if true == pred:
+        correct[true] += 1
+
+for label in sorted(total.keys()):
+    acc = correct[label] / total[label] * 100
+    bar = "█" * int(acc // 5)
+    print(f"  {label:20s}: {acc:5.1f}%  {bar}")
+
+print(f"\n모델 저장 완료: {MODEL_SAVE_PATH}")
+print("다음 단계: 모델을 TensorFlow.js용으로 변환합니다.")
+
+# ══════════════════════════════════════════════
+# 6단계: TF.js용으로 직접 저장
+# ══════════════════════════════════════════════
+print("\n TF.js용 모델 저장 중...")
+
+import tensorflowjs as tfjs
+tfjs.converters.save_keras_model(model, "web_model")
+print("web_model 저장 완료!")

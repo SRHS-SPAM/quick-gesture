@@ -1,0 +1,24 @@
+data:
+  raw_path: data/raw/gesture_data_1773745882052.json
+  labels_path: data/raw/labels.json
+  processed_path: data/processed
+  test_size: 0.2
+  random_seed: 42
+
+model:
+  frames: 30
+  landmarks: 33
+  coords: 3
+  lstm_units: 64
+  dropout: 0.3
+  dense_units: 32
+
+training:
+  epochs: 100
+  batch_size: 32
+  early_stopping_patience: 10
+  optimizer: adam
+
+export:
+  onnx_path: models/exports/gesture_model.onnx
+  opset_version: 13
