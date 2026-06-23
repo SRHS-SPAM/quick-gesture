@@ -81,12 +81,11 @@ export default function App() {
     dispatch({ type: 'SET_PHASE', phase: 'loading' });
     setLoadingText('카메라 연결 중...');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-      videoRef.current.srcObject = stream;
-      await new Promise<void>(r => { videoRef.current.onloadedmetadata = () => r(); });
+      // loading 페이즈로 GamePage가 DOM에 마운트될 때까지 대기
+      await new Promise(r => setTimeout(r, 50));
 
       setLoadingText('MediaPipe 로딩 중...');
-      await startPose(videoRef.current);
+      await startPose(videoRef.current);  // Camera 클래스가 내부적으로 getUserMedia 처리
 
       setLoadingText('AI 모델 로딩 중...');
       await loadModel('/gesture_model.onnx', '/labels.json');
@@ -96,7 +95,8 @@ export default function App() {
         startGame();
         setTimeout(() => dispatch({ type: 'SET_PHASE', phase: 'playing' }), 3500);
       }, 500);
-    } catch {
+    } catch (e) {
+      console.error('Camera init failed:', e);
       dispatch({ type: 'SET_PHASE', phase: 'permission' });
     }
   }, [startPose, startGame, dispatch]);
@@ -129,14 +129,17 @@ export default function App() {
         </div>
       )}
 
-      {(state.phase === 'playing') && (
-        <GamePage
-          state={state}
-          onPoseResults={onPoseResults}
-          topPreds={topPreds}
-          aiText={aiText}
-          videoRef={videoRef}
-        />
+      {/* loading 페이즈부터 마운트해 videoRef가 항상 설정되도록 함 */}
+      {(state.phase === 'loading' || state.phase === 'countdown' || state.phase === 'playing') && (
+        <div style={{ display: state.phase === 'playing' ? 'block' : 'none' }}>
+          <GamePage
+            state={state}
+            onPoseResults={onPoseResults}
+            topPreds={topPreds}
+            aiText={aiText}
+            videoRef={videoRef}
+          />
+        </div>
       )}
 
       {state.phase === 'result' && (
